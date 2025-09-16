@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Utel Settings Form (Standalone, does not override General Settings) -->
+    <record id="res_config_settings_view_form_utel" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.utel</field>
+        <field name="model">res.config.settings</field>
+        <field name="arch" type="xml">
+            <form string="Utel Settings">
+                <sheet>
+                    <group>
+                        <group string="Utel API Configuration">
+                            <field name="utel_base_url" placeholder="https://example.com"/>
+                            <field name="utel_token" password="True" placeholder="Bearer xxx"/>
+                        </group>
+                        <group string="Defaults">
+                            <field name="utel_per_page"/>
+                            <field name="utel_auto_days"/>
+                        </group>
+                    </group>
+
+                    <group string="Actions">
+                        <button name="action_utel_manual_sync"
+                                type="object"
+                                string="Manual Sync (first 5 pages)"
+                                class="btn-primary"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Window action for Utel Settings -->
+    <record id="action_utel_settings" model="ir.actions.act_window">
+        <field name="name">Utel Settings</field>
+        <field name="res_model">res.config.settings</field>
+        <field name="view_mode">form</field>
+        <field name="target">current</field>
+        <field name="view_id" ref="res_config_settings_view_form_utel"/>
+    </record>
+
+    <!-- Menuitem under Settings -->
+    <menuitem id="menu_utel_settings"
+              name="Utel"
+              parent="base.menu_administration"
+              action="action_utel_settings"
+              sequence="25"/>
+</odoo>
