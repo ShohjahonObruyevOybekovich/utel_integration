@@ -2,13 +2,13 @@
 <odoo>
     <record id="ir_cron_utel_sync_recent" model="ir.cron">
         <field name="name">Utel: Sync Recent Calls</field>
-        <field name="model_id" ref="model_utel_call"/>
+        <field name="model_id" ref="utel_integration.model_utel_call"/>
         <field name="state">code</field>
         <field name="code">model.cron_sync_recent()</field>
+        <field name="user_id" ref="base.user_admin"/>
         <field name="interval_number">1</field>
         <field name="interval_type">minutes</field>
         <field name="nextcall" eval="(DateTime.now())"/>
         <field name="active">True</field>
     </record>
-
 </odoo>

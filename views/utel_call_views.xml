@@ -1,134 +1,161 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
-    <!-- =============== LIST (was tree) =============== -->
-    <record id="view_utel_call_list" model="ir.ui.view">
-        <field name="name">utel.call.list</field>
-        <field name="model">utel.call</field>
-        <field name="arch" type="xml">
-            <list string="Utel Calls" create="0" delete="0">
-                <field name="date_time"/>
-                <field name="type"/>
-                <field name="src" string="From"/>
-                <field name="dst" string="To"/>
-                <field name="external_number" string="External Number"/>
+  <!-- ================== LIST ================== -->
+  <record id="view_utel_call_list" model="ir.ui.view">
+    <field name="name">utel.call.list</field>
+    <field name="model">utel.call</field>
+    <field name="arch" type="xml">
+      <list string="Utel Qo'ng'iroqlari" create="0" delete="0" edit="0" default_order="date_time desc">
+        <field name="date_time" string="Qo'ng'iroq sanasi"/>
+        <field name="type" string="Turi"/>
+        <field name="partner_id" string="Kontakt"/>
+        <field name="src" string="Dan"/>
+        <field name="dst" string="Ga"/>
+        <field name="external_number" string="Kompaniya raqami"/>
+        <field name="talk_time_display" string="Muloqot davomiyligi"/>
+        <field name="ring_time_display" string="Qo'ng'iroq davomiyligi" optional="hide"/>
+        <field name="status" optional="hide"/>
+        <field name="has_recording" optional="show"/>
 
-                <!-- Human-readable durations (computed/related in Python) -->
-                <field name="talk_time_display" string="Talk Time"/>
-                <field name="ring_time_display" string="Ring Time"/>
+        <!-- Row actions -->
+        <button name="action_open_play"
+                type="object"
+                string="Play"
+                class="oe_link"
+                invisible="not has_recording"/>
+        <button name="action_open_download"
+                type="object"
+                string="Yuklab olish"
+                class="oe_link"
+                invisible="not download_url"/>
+      </list>
+    </field>
+  </record>
 
-                <field name="status"/>
+  <!-- ================== FORM ================== -->
+  <record id="view_utel_call_form" model="ir.ui.view">
+    <field name="name">utel.call.form</field>
+    <field name="model">utel.call</field>
+    <field name="arch" type="xml">
+      <form string="Utel qo'g'iroqlari" create="0" delete="0" edit="0">
+        <sheet>
+          <group>
+            <group>
+              <field name="date_time" string="Qo'ng'iroq sanasi"/>
+              <field name="type" string="Turi"/>
+              <field name="status"/>
+            </group>
+            <group>
+              <field name="partner_id" string="Kontakt"/>
+              <field name="src" string="Dan"/>
+              <field name="dst" string="Ga"/>
+              <field name="external_number" string="Kompaniya raqami"/>
+            </group>
+          </group>
 
-                <!-- Buttons: use 'invisible' expressions (no attrs/states) -->
-                <button name="action_open_play"
-                        type="object"
-                        string="Play"
-                        class="oe_link"
-                        invisible="not has_recording"/>
-                <button name="action_open_download"
-                        type="object"
-                        string="Download"
-                        class="oe_link"
-                        invisible="not download_url"/>
-            </list>
-        </field>
-    </record>
+          <group string="Davomiyligi">
+            <field name="talk_time" string="Muloqot davomiyligi" invisible="1"/>
+            <!-- <field name="ring_time" string="Qo'ng'iroq davomiyligi" invisible="1"/> -->
+            <field name="talk_time_display" readonly="1"/>
+            <!-- <field name="ring_time_display" readonly="1"/> -->
+          </group>
 
-    <!-- =============== FORM =============== -->
-    <record id="view_utel_call_form" model="ir.ui.view">
-        <field name="name">utel.call.form</field>
-        <field name="model">utel.call</field>
-        <field name="arch" type="xml">
-            <form string="Utel Call" create="0" delete="0" edit="0">
-                <sheet>
-                    <group>
-                        <group>
-                            <field name="date_time"/>
-                            <field name="type"/>
-                            <field name="status"/>
-                        </group>
-                        <group>
-                            <field name="src" string="From"/>
-                            <field name="dst" string="To"/>
-                            <field name="external_number" string="External Number"/>
-                        </group>
-                    </group>
+          <group string="Audio yozuvi">
+            <field name="has_recording" string="Audio yozuvi bor?" readonly="1"/>
+            <field name="play_url" string="Audio url" readonly="1"/>
+            <field name="download_url" string="Yuklab olish url" readonly="1"/>
+            <!-- Embedded compact player -->
+            <field name="player_html" widget="html" readonly="1" nolabel="1"/>
+            <button name="action_delete_call"
+                    type="object"
+                    string="Delete"
+                    class="oe_link text-danger"/>
+            <button name="action_open_play"
+                    type="object"
+                    string="Playerni ochish"
+                    class="btn-secondary"
+                    invisible="not has_recording"/>
+            <button name="action_open_download"
+                    type="object"
+                    string="Yuklab olish"
+                    class="btn-primary"
+                    invisible="not download_url"/>
+          </group>
 
-                    <group string="Durations">
-                        <field name="talk_time" invisible="1"/>
-                        <field name="ring_time" invisible="1"/>
-                        <field name="talk_time_display" readonly="1"/>
-                        <field name="ring_time_display" readonly="1"/>
-                    </group>
+          <notebook>
+            <page string="Notes">
+              <field name="note"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
 
-                    <group string="Recording">
-                        <field name="has_recording" readonly="1"/>
-                        <field name="play_url" readonly="1"/>
-                        <field name="download_url" readonly="1"/>
-                        <!-- Embedded compact player (computed HTML) -->
-                        <field name="player_html" readonly="1" nolabel="1"/>
-                        <button name="action_open_play"
-                                type="object"
-                                string="Open Player"
-                                class="btn-secondary"
-                                invisible="not has_recording"/>
-                        <button name="action_open_download"
-                                type="object"
-                                string="Download"
-                                class="btn-primary"
-                                invisible="not download_url"/>
-                    </group>
+  <!-- ================== SEARCH ================== -->
+  <record id="view_utel_call_search" model="ir.ui.view">
+    <field name="name">utel.call.search</field>
+    <field name="model">utel.call</field>
+    <field name="arch" type="xml">
+      <search string="Qo'ng'iroqlarni qidirish">
+        <field name="partner_id"/>
+        <field name="src" filter_domain="[('src','ilike',self)]"/>
+        <field name="dst" filter_domain="[('dst','ilike',self)]"/>
+        <field name="external_number" filter_domain="[('external_number','ilike',self)]"/>
 
-                    <notebook>
-                        <page string="Notes">
-                            <field name="note"/>
-                        </page>
-                    </notebook>
-                </sheet>
-            </form>
-        </field>
-    </record>
+        <separator/>
 
-    <!-- =============== SEARCH =============== -->
-    <record id="view_utel_call_search" model="ir.ui.view">
-        <field name="name">utel.call.search</field>
-        <field name="model">utel.call</field>
-        <field name="arch" type="xml">
-            <search string="Search Calls">
-                <field name="src" filter_domain="[('src','ilike',self)]"/>
-                <field name="dst" filter_domain="[('dst','ilike',self)]"/>
-                <field name="external_number" filter_domain="[('external_number','ilike',self)]"/>
-                <filter string="With Recording" name="with_recording" domain="[('has_recording','=',True)]"/>
-                <filter string="Incoming" name="incoming" domain="[('type','=','in')]"/>
-                <filter string="Outgoing" name="outgoing" domain="[('type','=','out')]"/>
-                <filter string="Missed" name="missed" domain="[('type','=','missed')]"/>
-                <separator/>
-                <filter string="Today" name="today" domain="[('date_time','&gt;=', context_today())]"/>
-            </search>
-        </field>
-    </record>
+        <filter string="Audio yozuvi bilan" name="with_recording" domain="[('has_recording','=',True)]"/>
+        <filter string="Kiruvchi" name="incoming" domain="[('type','=','in')]"/>
+        <filter string="Chiquvchi" name="outgoing" domain="[('type','=','out')]"/>
+        <filter string="O'tkazib yuborilgan" name="missed" domain="[('type','=','missed')]"/>
 
-    <!-- =============== ACTION =============== -->
-    <record id="action_utel_calls" model="ir.actions.act_window">
-        <field name="name">Utel Calls</field>
-        <field name="res_model">utel.call</field>
-        <field name="view_mode">list,form</field>
-        <field name="view_id" ref="view_utel_call_list"/>
-        <field name="context">{}</field>
-        <field name="target">current</field>
-        <field name="search_view_id" ref="view_utel_call_search"/>
-    </record>
+        <separator/>
 
-    <!-- =============== MENUS (Calls) =============== -->
-    <!-- Reuse your UTEL root if it already exists -->
-    <menuitem id="menu_utel_root"
-          name="Utel"
-          sequence="10"
-          web_icon="utel_integration,static/description/icon.png"/>
-    <menuitem id="menu_utel_calls"
-              name="Calls"
-              parent="menu_utel_root"
-              action="action_utel_calls"
-              sequence="10"/>
+        <filter string="Bugun" name="today"
+                domain="[('date_time','&gt;=', context_today())]"/>
+        <filter string="Oxirgi 7 kunlik" name="last7"
+                domain="[('date_time','&gt;=', (context_today() - datetime.timedelta(days=7)))]"/>
 
+        <group expand="0" string="Group By">
+          <filter string="Kontakt" name="group_partner" context="{'group_by':'partner_id'}"/>
+          <filter string="Turi" name="group_type" context="{'group_by':'type'}"/>
+          <filter string="Sana" name="group_date" context="{'group_by':'date_time:day'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <!-- ================== ACTIONS ================== -->
+  <record id="action_utel_calls" model="ir.actions.act_window">
+    <field name="name">Utel Qo'ng'iroqlari</field>
+    <field name="res_model">utel.call</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_utel_call_list"/>
+    <field name="search_view_id" ref="view_utel_call_search"/>
+    <field name="context">{}</field>
+    <field name="target">current</field>
+  </record>
+
+  <!-- NEW: Entry action that shows a toast "since last visit" and then opens the list -->
+  <record id="action_utel_calls_entry" model="ir.actions.server">
+    <field name="name">Open Utel Calls (with toast)</field>
+    <field name="model_id" ref="model_utel_call"/>
+    <field name="state">code</field>
+    <field name="code">action = env['utel.call'].action_open_with_toast(); action</field>
+  </record>
+
+  <!-- ================== MENUS ================== -->
+  <menuitem id="menu_utel_root"
+            name="Utel"
+            sequence="10"
+            web_icon="utel_integration,static/description/icon.png"/>
+
+  <!-- Point menu to the entry action so users get the "since last visit" toast when entering -->
+  <menuitem id="menu_utel_calls"
+            name="Qo'ng'iroqlar"
+            parent="menu_utel_root"
+            action="action_utel_calls_entry"
+            sequence="10"/>
 </odoo>

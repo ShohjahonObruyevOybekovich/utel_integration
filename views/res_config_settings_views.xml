@@ -10,6 +10,9 @@
                 <sheet>
                     <group>
                         <group string="Utel API Configuration">
+                            <group string="Routing">
+                                <field name="utel_did_numbers" placeholder="998339993099, 99812xxxxxxx"/>
+                            </group>
                             <field name="utel_base_url" placeholder="https://example.com"/>
                             <field name="utel_token" password="True" placeholder="Bearer xxx"/>
                         </group>
@@ -17,6 +20,12 @@
                             <field name="utel_per_page"/>
                             <field name="utel_auto_days"/>
                         </group>
+                    </group>
+
+                    <!-- NEW: Notifications -->
+                    <group string="Notifications">
+                        <field name="utel_notify_enabled"/>
+                        <field name="utel_notify_group_xmlid" placeholder="base.group_user"/>
                     </group>
 
                     <group string="Actions">
