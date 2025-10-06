@@ -7,6 +7,9 @@ import requests
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
 
+import os
+import base64
+
 _logger = logging.getLogger(__name__)
 
 # System parameters
@@ -21,7 +24,7 @@ PARAM_INTERNAL_EXT = "utel_integration.internal_extensions"  # "101,102,103"
 PARAM_NOTIFY_ENABLED = "utel_integration.notify_enabled"          # "1"/"0"
 PARAM_NOTIFY_GROUP_XMLID = "utel_integration.notify_group_xmlid"  # e.g. "base.group_user"
 PARAM_DIDS = "utel_integration.did_numbers"                       # comma-separated DIDs
-
+_ICON_B64_CACHE = {}
 # -------------------- helpers --------------------
 def _parse_hms(val: str) -> int:
     if not val:
@@ -67,6 +70,29 @@ def _format_uz_pretty(digits):
         return f"+998 {n[0:2]} {n[2:5]} {n[5:7]} {n[7:9]}"
     return f"+{s}" if s else ""
 
+def _read_static_b64(filename, module='utel_integration'):
+    """
+    Read file from addons/<module>/static/description/<filename> and return base64 string (ascii),
+    or None on error. Uses in-process cache to avoid repeated disk reads.
+    Replace 'your_module_name' with your actual module folder name.
+    """
+    key = f"{module}:{filename}"
+    val = _ICON_B64_CACHE.get(key)
+    if val is not None:
+        return val
+    # compute path relative to this file, assuming typical module layout:
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'static', 'description'))
+    path = os.path.join(base_dir, filename)
+    try:
+        with open(path, 'rb') as fh:
+            raw = fh.read()
+        b64 = base64.b64encode(raw).decode('ascii')
+        _ICON_B64_CACHE[key] = b64
+        return b64
+    except Exception:
+        _ICON_B64_CACHE[key] = None
+        return None
+
 # -------------------- model --------------------
 class UtelCall(models.Model):
     _name = "utel.call"
@@ -87,6 +113,14 @@ class UtelCall(models.Model):
         default="other",
         index=True,
     )
+    
+    type_icon_html = fields.Html(
+        string="Type Icon HTML",
+        compute="_compute_type_icon_html",
+        readonly=True,
+        sanitize=False,  
+    )
+
     src = fields.Char(string="From", index=True)
     dst = fields.Char(string="To", index=True)
     external_number = fields.Char(string="External Number", index=True)
@@ -162,165 +196,393 @@ class UtelCall(models.Model):
                 f"</audio>"
             ) if rec.has_recording else ""
 
-    # ---------- timezone & date parsing ----------
-    def _utel_tz(self) -> ZoneInfo:
-        ICP = self.env["ir.config_parameter"].sudo()
-        tzname = ICP.get_param(PARAM_TZ) or self.env.user.tz or "Asia/Tashkent"
-        try:
-            return ZoneInfo(tzname)
-        except Exception:
-            return ZoneInfo("Asia/Tashkent")
 
-    def _parse_utel_datetime(self, txt):
-        if not txt:
-            return False
-        s = str(txt).strip()
-        try:
-            if "T" in s or "Z" in s or "+" in s:
-                s = s.replace("Z", "+00:00")
-                dt = datetime.fromisoformat(s)
-            else:
-                dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
-        except Exception:
+    @api.depends("type", "status", "src", "dst")
+    def _compute_type_icon_html(self):
+        """
+        Show 4 icons based on direction (in/out) and answer status:
+        - in + answered
+        - in + not_answered
+        - out + answered
+        - out + not_answered
+
+        Static files (put under static/description/):
+        - call-in-answered.png
+        - call-in-not-answered.png
+        - call-out-answered.png
+        - call-out-not-answered.png
+
+        Fallbacks: small inline SVGs.
+        """
+        FILES = {
+            "in_answered": "call-in-answered.png",
+            "in_not_answered": "call-in-not-answered.png",
+            "out_answered": "call-out-answered.png",
+            "out_not_answered": "call-out-not-answered.png",
+        }
+
+        # tiny inline SVG fallbacks (16x16)
+        SVG_FALLBACKS = {
+            "in_answered": (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+                'viewBox="0 0 24 24" style="vertical-align:middle">'
+                '<path fill="currentColor" d="M21 15v4a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-1.2'
+                'a1 1 0 0 0-.85-.99c-1.4-.24-2.75-.74-3.95-1.45a9 9 0 0 1-3.23-3.23'
+                'c-.71-1.2-1.21-2.55-1.45-3.95A1 1 0 0 0 6.2 6H5a1 1 0 0 1-1-1V1'
+                'a1 1 0 0 1 1-1h4c.55 0 1 .45 1 1v1.2c0 .33.2.63.51.79 3.12 1.58'
+                '5.59 4.05 7.17 7.17.16.31.46.51.79.51H21z"/></svg>'
+            ),
+            "in_not_answered": (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+                'viewBox="0 0 24 24" style="vertical-align:middle">'
+                '<path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.54 11.88'
+                'L13.41 12l2.13-1.88a1 1 0 1 0-1.28-1.56L12 10.59 10.74 8.56'
+                'a1 1 0 1 0-1.48 1.34L10.59 12l-1.33 1.88a1 1 0 0 0 1.48 1.34'
+                'L12 13.41l1.26 1.81a1 1 0 0 0 1.48-1.34z"/></svg>'
+            ),
+            "out_answered": (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+                'viewBox="0 0 24 24" style="vertical-align:middle">'
+                '<path fill="currentColor" d="M3 5v4a1 1 0 0 0 1 1h1.2c.33 0 .63.2.79.51'
+                '1.58 3.12 4.05 5.59 7.17 7.17.31.16.51.46.51.79V21a1 1 0 0 0 1 1h4'
+                'a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1h-1.2c-.33 0-.63-.2-.79-.51'
+                '-1.58-3.12-4.05-5.59-7.17-7.17-.31-.16-.51-.46-.51-.79V5a1 1 0 0 0-1-1H4'
+                'a1 1 0 0 0-1 1z"/></svg>'
+            ),
+            "out_not_answered": (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+                'viewBox="0 0 24 24" style="vertical-align:middle">'
+                '<path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.54 11.88'
+                'L13.41 12l2.13-1.88a1 1 0 1 0-1.28-1.56L12 10.59 10.74 8.56'
+                'a1 1 0 1 0-1.48 1.34L10.59 12l-1.33 1.88a1 1 0 0 0 1.48 1.34'
+                'L12 13.41l1.26 1.81a1 1 0 0 0 1.48-1.34z"/></svg>'
+            ),
+        }
+
+        MODULE_NAME = "utel_integration"  # your module folder
+
+        def _answer_key(status_txt: str) -> str:
+            s = (status_txt or "").strip().lower()
+            if "not" in s or s == "no answer" or s == "missed":
+                return "not_answered"
+            if "answer" in s:
+                return "answered"
+            # default to not_answered if unclear
+            return "not_answered"
+
+        for rec in self:
+            direction = (rec.type or "other").lower()
+
+            # If upstream gave "missed" without direction, guess by numbers:
+            if direction == "missed":
+                # incoming missed if src looks external; else outgoing missed
+                try:
+                    if not rec._is_internal_number(rec.src):
+                        direction = "in"
+                    else:
+                        direction = "out"
+                except Exception:
+                    direction = "in"
+
+            if direction not in ("in", "out"):
+                # fallback generic
+                rec.type_icon_html = SVG_FALLBACKS["in_not_answered"]
+                continue
+
+            ans = _answer_key(rec.status)
+            key = f"{direction}_{ans}"
+
+            html = None
+            filename = FILES.get(key)
+            if filename:
+                b64 = _read_static_b64(filename, module=MODULE_NAME)
+                if b64:
+                    ext = os.path.splitext(filename)[1].lower().lstrip(".")
+                    mime = (
+                        "image/png" if ext in ("png",)
+                        else "image/svg+xml" if ext in ("svg",)
+                        else "image/png"
+                    )
+                    html = (
+                        f'<img src="data:{mime};base64,{b64}" '
+                        f'style="width:16px;height:16px;object-fit:contain;vertical-align:middle;" '
+                        f'alt="{key}"/>'
+                    )
+
+            if not html:
+                html = SVG_FALLBACKS.get(key, SVG_FALLBACKS["in_not_answered"])
+
+            rec.type_icon_html = html
+
+        
+        # ---------- timezone & date parsing ----------
+        def _utel_tz(self) -> ZoneInfo:
+            ICP = self.env["ir.config_parameter"].sudo()
+            tzname = ICP.get_param(PARAM_TZ) or self.env.user.tz or "Asia/Tashkent"
             try:
-                return fields.Datetime.to_datetime(s)
+                return ZoneInfo(tzname)
             except Exception:
+                return ZoneInfo("Asia/Tashkent")
+
+        def _parse_utel_datetime(self, txt):
+            if not txt:
                 return False
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=self._utel_tz())
-        return dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+            s = str(txt).strip()
+            try:
+                if "T" in s or "Z" in s or "+" in s:
+                    s = s.replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(s)
+                else:
+                    dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                try:
+                    return fields.Datetime.to_datetime(s)
+                except Exception:
+                    return False
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=self._utel_tz())
+            return dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
-    # ---------- fingerprint ----------
-    def _build_fp_key_from_vals(self, vals):
-        dt = vals.get("date_time")
-        t = (vals.get("type") or "").strip()
-        srcn = _digits_only(vals.get("src"))
-        dstn = _digits_only(vals.get("dst"))
-        extn = _digits_only(vals.get("external_number"))
-        dt_s = dt.strftime("%Y-%m-%d %H:%M:%S") if isinstance(dt, datetime) and dt else str(dt or "")
-        return f"{t}|{dt_s}|{srcn}|{dstn}|{extn}"
+        # ---------- fingerprint ----------
+        def _build_fp_key_from_vals(self, vals):
+            dt = vals.get("date_time")
+            t = (vals.get("type") or "").strip()
+            srcn = _digits_only(vals.get("src"))
+            dstn = _digits_only(vals.get("dst"))
+            extn = _digits_only(vals.get("external_number"))
+            dt_s = dt.strftime("%Y-%m-%d %H:%M:%S") if isinstance(dt, datetime) and dt else str(dt or "")
+            return f"{t}|{dt_s}|{srcn}|{dstn}|{extn}"
 
-    def _recompute_fp_key(self):
-        for r in self:
-            dt_s = r.date_time.strftime("%Y-%m-%d %H:%M:%S") if r.date_time else ""
-            r.fp_key = f"{r.type or ''}|{dt_s}|{r.src_norm or ''}|{r.dst_norm or ''}|{r.external_number_norm or ''}"
+        def _recompute_fp_key(self):
+            for r in self:
+                dt_s = r.date_time.strftime("%Y-%m-%d %H:%M:%S") if r.date_time else ""
+                r.fp_key = f"{r.type or ''}|{dt_s}|{r.src_norm or ''}|{r.dst_norm or ''}|{r.external_number_norm or ''}"
 
-    # ---------- partner matching / auto-create ----------
-    def _internal_extensions(self):
-        ICP = self.env["ir.config_parameter"].sudo()
-        raw = ICP.get_param(PARAM_INTERNAL_EXT, default="") or ""
-        return {x.strip() for x in raw.split(",") if x.strip()}
+        # ---------- partner matching / auto-create ----------
+        def _internal_extensions(self):
+            ICP = self.env["ir.config_parameter"].sudo()
+            raw = ICP.get_param(PARAM_INTERNAL_EXT, default="") or ""
+            return {x.strip() for x in raw.split(",") if x.strip()}
 
-    def _is_internal_number(self, raw_num) -> bool:
-        if not raw_num:
-            return True
-        d = _digits_only(raw_num)
-        if not d:
-            return True
-        if d in self._internal_extensions():
-            return True
-        if len(d) <= 5:
-            return True
-        return False
+        def _is_internal_number(self, raw_num) -> bool:
+            if not raw_num:
+                return True
+            d = _digits_only(raw_num)
+            if not d:
+                return True
+            if d in self._internal_extensions():
+                return True
+            if len(d) <= 5:
+                return True
+            return False
 
-    def _company_dids(self):
-        ICP = self.env["ir.config_parameter"].sudo()
-        raw = (ICP.get_param(PARAM_DIDS) or "").strip()
-        dids = set()
-        for token in raw.split(","):
-            d = _digits_only(token)
-            if d:
-                dids.add(d)
-        return dids
+        def _company_dids(self):
+            ICP = self.env["ir.config_parameter"].sudo()
+            raw = (ICP.get_param(PARAM_DIDS) or "").strip()
+            dids = set()
+            for token in raw.split(","):
+                d = _digits_only(token)
+                if d:
+                    dids.add(d)
+            return dids
 
-    def _external_candidates(self):
-        self.ensure_one()
-        dids = self._company_dids()
-        payload_did = _digits_only(self.external_number)
-        if payload_did:
-            dids.add(payload_did)
+        def _external_candidates(self):
+            self.ensure_one()
+            dids = self._company_dids()
+            payload_did = _digits_only(self.external_number)
+            if payload_did:
+                dids.add(payload_did)
 
-        out, seen = [], set()
+            out, seen = [], set()
 
-        def consider(raw):
-            d = _digits_only(raw)
-            if not d or d in seen:
-                return
-            seen.add(d)
-            if d in dids:
-                return
-            if self._is_internal_number(d):
-                return
-            out.append(_uz_digits(d))
-
-        if (self.type or "").lower() == "in":
-            for raw in (self.src, self.dst):
-                consider(raw)
-        elif (self.type or "").lower() == "out":
-            for raw in (self.dst, self.src):
-                consider(raw)
-        else:
-            for raw in (self.src, self.dst):
-                consider(raw)
-
-        if not out:
-            for raw in (self.src, self.dst):
+            def consider(raw):
                 d = _digits_only(raw)
-                if d and not self._is_internal_number(d):
-                    out.append(_uz_digits(d))
-        return list(dict.fromkeys(out))
+                if not d or d in seen:
+                    return
+                seen.add(d)
+                if d in dids:
+                    return
+                if self._is_internal_number(d):
+                    return
+                out.append(_uz_digits(d))
+
+            if (self.type or "").lower() == "in":
+                for raw in (self.src, self.dst):
+                    consider(raw)
+            elif (self.type or "").lower() == "out":
+                for raw in (self.dst, self.src):
+                    consider(raw)
+            else:
+                for raw in (self.src, self.dst):
+                    consider(raw)
+
+            if not out:
+                for raw in (self.src, self.dst):
+                    d = _digits_only(raw)
+                    if d and not self._is_internal_number(d):
+                        out.append(_uz_digits(d))
+            return list(dict.fromkeys(out))
+
+        _NUM_TO_PARTNER_CACHE = {} 
+
 
     def _find_partner_by_numbers(self):
+        """
+        No custom fields; works with standard phone/mobile only.
+        - Build canonical Uzbekistan digits (adds 998 for 9-digit).
+        - First: quick hit from in-process cache.
+        - Second: exact match on our COMPACT format (+<digits>).
+        - Third: narrow with a 7-digit tail ilike, then verify by digits in Python.
+        - Prefer same-company partner if multiple.
+        """
         self.ensure_one()
+        Partners = self.env["res.partner"].sudo()
+        cache = globals().setdefault("_NUM_TO_PARTNER_CACHE", {})
+
         candidates = self._external_candidates()
         if not candidates:
             return self.env["res.partner"]
 
-        Partners = self.env["res.partner"].sudo()
+        # Canonicalize to clean Uzbekistan digits
+        norms, seen = [], set()
+        for raw in candidates:
+            d = _digits_only(_uz_digits(raw))
+            if d and d not in seen:
+                seen.add(d)
+                norms.append(d)
 
-        # 1) try exact digits match by reading existing partners and comparing with _digits_only
-        #    (we first narrow with a 7-digit tail ilike for performance)
-        for d in candidates:
-            tail = d[-7:] if len(d) > 7 else d
-            possible = Partners.search(
-                ['|', ('phone', 'ilike', tail), ('mobile', 'ilike', tail)],
-                limit=50,
-            )
-            d_clean = _digits_only(d)
-            for p in possible:
-                if _digits_only(p.phone) == d_clean or _digits_only(p.mobile) == d_clean:
+        if not norms:
+            return self.env["res.partner"]
+
+        for d_clean in norms:
+            # 0) in-process cache (fast, avoids dupe during one sync)
+            pid = cache.get(d_clean)
+            if pid:
+                p = Partners.browse(pid)
+                if p.exists():
                     return p
 
-        # 2) single narrow fallback — if exactly one record matches the tail, take it
-        d0 = candidates[0]
-        tail = d0[-7:] if len(d0) > 7 else d0
-        narrowed = Partners.search(
-            ['|', ('phone', 'ilike', tail), ('mobile', 'ilike', tail)],
-            limit=2,
-        )
-        if len(narrowed) == 1:
-            return narrowed[0]
+            # 1) exact match on COMPACT format (what we create)
+            compact = f"+{d_clean}"
+            exact_eq = Partners.search(
+                ['|', ('phone', '=', compact), ('mobile', '=', compact)],
+                limit=1,
+            )
+            if exact_eq:
+                cache[d_clean] = exact_eq.id
+                return exact_eq
+
+            # 2) fallback: tail ilike (works best when phones are stored compact)
+            tail = d_clean[-7:] if len(d_clean) > 7 else d_clean
+            possible = Partners.search(
+                ['|', ('phone', 'ilike', tail), ('mobile', 'ilike', tail)],
+                limit=100,
+            )
+
+            # verify strictly by digits to avoid false positives
+            exact = []
+            for p in possible:
+                if _digits_only(p.phone) == d_clean or _digits_only(p.mobile) == d_clean:
+                    exact.append(p)
+
+            if exact:
+                # Prefer same-company if possible
+                same_co = [p for p in exact if (not p.company_id or p.company_id == self.env.company)]
+                keeper = (same_co or exact)[0]
+                cache[d_clean] = keeper.id
+                return keeper
 
         return self.env["res.partner"]
 
+
+    def _get_or_create_partner_by_number(self, raw_digits: str):
+        """
+        Idempotent without custom fields:
+        - store phones in COMPACT format: '+<digits>' (no spaces),
+        - lookup via cache, then exact '=', then tail ilike+verify,
+        - if none found, create once; re-check and cache.
+        """
+        Partners = self.env["res.partner"].sudo()
+        cache = globals().setdefault("_NUM_TO_PARTNER_CACHE", {})
+
+        d_clean = _digits_only(_uz_digits(raw_digits))
+        if not d_clean:
+            return self.env["res.partner"]
+
+        # 0) cache
+        pid = cache.get(d_clean)
+        if pid:
+            p = Partners.browse(pid)
+            if p.exists():
+                return p
+
+        compact = f"+{d_clean}"
+
+        # 1) exact '=' on compact
+        existing = Partners.search(
+            ['|', ('phone', '=', compact), ('mobile', '=', compact)],
+            limit=1,
+        )
+        if existing:
+            cache[d_clean] = existing.id
+            return existing
+
+        # 2) tail ilike + verify
+        tail = d_clean[-7:] if len(d_clean) > 7 else d_clean
+        possible = Partners.search(
+            ['|', ('phone', 'ilike', tail), ('mobile', 'ilike', tail)],
+            limit=100,
+        )
+        for p in possible:
+            if _digits_only(p.phone) == d_clean or _digits_only(p.mobile) == d_clean:
+                cache[d_clean] = p.id
+                return p
+
+        # 3) create once in COMPACT format (no spaces → future tail matches)
+        partner = Partners.create({
+            "name": compact,
+            "phone": compact,          # keep consistent & searchable
+            "company_type": "person",
+            # Optional company scoping:
+            # "company_id": self.env.company.id,
+        })
+
+        # race-guard recheck
+        again = Partners.search(
+            ['|', ('phone', '=', compact), ('mobile', '=', compact)],
+            limit=1,
+        )
+        final = again or partner
+        cache[d_clean] = final.id
+        return final
+    
     def _assign_partner_from_numbers(self, create_if_missing=True):
+        """
+        Set partner_id for each record if possible.
+        If create_if_missing=True (default), create a single canonical contact for the number.
+        """
         for rec in self:
             if rec.partner_id:
                 continue
+
+            # First try to find an existing partner by strict norms
             partner = rec._find_partner_by_numbers()
             if partner:
                 rec.partner_id = partner.id
                 continue
+
             if not create_if_missing:
                 continue
+
+            # Create or get a single partner for the *first* external candidate
             cands = rec._external_candidates()
             if not cands:
                 continue
-            d = cands[0]
-            pretty = _format_uz_pretty(_uz_digits(d))
-            vals = {"name": pretty, "phone": pretty, "company_type": "person"}
-            partner = self.env["res.partner"].sudo().create(vals)
-            rec.partner_id = partner.id
+
+            partner = rec._get_or_create_partner_by_number(cands[0])
+            if partner:
+                rec.partner_id = partner.id
+
 
     # ---------- upsert ----------
     def _upsert_from_vals(self, vals, company=None):
