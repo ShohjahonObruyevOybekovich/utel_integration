@@ -25,6 +25,7 @@ PARAM_NOTIFY_ENABLED = "utel_integration.notify_enabled"          # "1"/"0"
 PARAM_NOTIFY_GROUP_XMLID = "utel_integration.notify_group_xmlid"  # e.g. "base.group_user"
 PARAM_DIDS = "utel_integration.did_numbers"                       # comma-separated DIDs
 _ICON_B64_CACHE = {}
+
 # -------------------- helpers --------------------
 def _parse_hms(val: str) -> int:
     if not val:
@@ -74,13 +75,11 @@ def _read_static_b64(filename, module='utel_integration'):
     """
     Read file from addons/<module>/static/description/<filename> and return base64 string (ascii),
     or None on error. Uses in-process cache to avoid repeated disk reads.
-    Replace 'your_module_name' with your actual module folder name.
     """
     key = f"{module}:{filename}"
     val = _ICON_B64_CACHE.get(key)
     if val is not None:
         return val
-    # compute path relative to this file, assuming typical module layout:
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'static', 'description'))
     path = os.path.join(base_dir, filename)
     try:
@@ -100,6 +99,9 @@ class UtelCall(models.Model):
     _order = "date_time desc, id desc"
     _rec_name = "src"
 
+    # in-process cache for number→partner lookups (per worker)
+    _NUM_TO_PARTNER_CACHE = {}
+
     # identifiers
     utel_id = fields.Char(index=True, readonly=True)
     company_id = fields.Many2one(
@@ -113,12 +115,12 @@ class UtelCall(models.Model):
         default="other",
         index=True,
     )
-    
+
     type_icon_html = fields.Html(
         string="Type Icon HTML",
         compute="_compute_type_icon_html",
         readonly=True,
-        sanitize=False,  
+        sanitize=False,
     )
 
     src = fields.Char(string="From", index=True)
@@ -196,7 +198,6 @@ class UtelCall(models.Model):
                 f"</audio>"
             ) if rec.has_recording else ""
 
-
     @api.depends("type", "status", "src", "dst")
     def _compute_type_icon_html(self):
         """
@@ -267,7 +268,6 @@ class UtelCall(models.Model):
                 return "not_answered"
             if "answer" in s:
                 return "answered"
-            # default to not_answered if unclear
             return "not_answered"
 
         for rec in self:
@@ -275,7 +275,6 @@ class UtelCall(models.Model):
 
             # If upstream gave "missed" without direction, guess by numbers:
             if direction == "missed":
-                # incoming missed if src looks external; else outgoing missed
                 try:
                     if not rec._is_internal_number(rec.src):
                         direction = "in"
@@ -285,7 +284,6 @@ class UtelCall(models.Model):
                     direction = "in"
 
             if direction not in ("in", "out"):
-                # fallback generic
                 rec.type_icon_html = SVG_FALLBACKS["in_not_answered"]
                 continue
 
@@ -314,117 +312,119 @@ class UtelCall(models.Model):
 
             rec.type_icon_html = html
 
-        
-        # ---------- timezone & date parsing ----------
-        def _utel_tz(self) -> ZoneInfo:
-            ICP = self.env["ir.config_parameter"].sudo()
-            tzname = ICP.get_param(PARAM_TZ) or self.env.user.tz or "Asia/Tashkent"
-            try:
-                return ZoneInfo(tzname)
-            except Exception:
-                return ZoneInfo("Asia/Tashkent")
+    # ---------- timezone & date parsing ----------
+    @api.model
+    def _utel_tz(self) -> ZoneInfo:
+        ICP = self.env["ir.config_parameter"].sudo()
+        tzname = ICP.get_param(PARAM_TZ) or self.env.user.tz or "Asia/Tashkent"
+        try:
+            return ZoneInfo(tzname)
+        except Exception:
+            return ZoneInfo("Asia/Tashkent")
 
-        def _parse_utel_datetime(self, txt):
-            if not txt:
-                return False
-            s = str(txt).strip()
-            try:
-                if "T" in s or "Z" in s or "+" in s:
-                    s = s.replace("Z", "+00:00")
-                    dt = datetime.fromisoformat(s)
-                else:
-                    dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
-            except Exception:
-                try:
-                    return fields.Datetime.to_datetime(s)
-                except Exception:
-                    return False
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=self._utel_tz())
-            return dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
-
-        # ---------- fingerprint ----------
-        def _build_fp_key_from_vals(self, vals):
-            dt = vals.get("date_time")
-            t = (vals.get("type") or "").strip()
-            srcn = _digits_only(vals.get("src"))
-            dstn = _digits_only(vals.get("dst"))
-            extn = _digits_only(vals.get("external_number"))
-            dt_s = dt.strftime("%Y-%m-%d %H:%M:%S") if isinstance(dt, datetime) and dt else str(dt or "")
-            return f"{t}|{dt_s}|{srcn}|{dstn}|{extn}"
-
-        def _recompute_fp_key(self):
-            for r in self:
-                dt_s = r.date_time.strftime("%Y-%m-%d %H:%M:%S") if r.date_time else ""
-                r.fp_key = f"{r.type or ''}|{dt_s}|{r.src_norm or ''}|{r.dst_norm or ''}|{r.external_number_norm or ''}"
-
-        # ---------- partner matching / auto-create ----------
-        def _internal_extensions(self):
-            ICP = self.env["ir.config_parameter"].sudo()
-            raw = ICP.get_param(PARAM_INTERNAL_EXT, default="") or ""
-            return {x.strip() for x in raw.split(",") if x.strip()}
-
-        def _is_internal_number(self, raw_num) -> bool:
-            if not raw_num:
-                return True
-            d = _digits_only(raw_num)
-            if not d:
-                return True
-            if d in self._internal_extensions():
-                return True
-            if len(d) <= 5:
-                return True
+    @api.model
+    def _parse_utel_datetime(self, txt):
+        if not txt:
             return False
-
-        def _company_dids(self):
-            ICP = self.env["ir.config_parameter"].sudo()
-            raw = (ICP.get_param(PARAM_DIDS) or "").strip()
-            dids = set()
-            for token in raw.split(","):
-                d = _digits_only(token)
-                if d:
-                    dids.add(d)
-            return dids
-
-        def _external_candidates(self):
-            self.ensure_one()
-            dids = self._company_dids()
-            payload_did = _digits_only(self.external_number)
-            if payload_did:
-                dids.add(payload_did)
-
-            out, seen = [], set()
-
-            def consider(raw):
-                d = _digits_only(raw)
-                if not d or d in seen:
-                    return
-                seen.add(d)
-                if d in dids:
-                    return
-                if self._is_internal_number(d):
-                    return
-                out.append(_uz_digits(d))
-
-            if (self.type or "").lower() == "in":
-                for raw in (self.src, self.dst):
-                    consider(raw)
-            elif (self.type or "").lower() == "out":
-                for raw in (self.dst, self.src):
-                    consider(raw)
+        s = str(txt).strip()
+        try:
+            if "T" in s or "Z" in s or "+" in s:
+                s = s.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(s)
             else:
-                for raw in (self.src, self.dst):
-                    consider(raw)
+                dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            try:
+                return fields.Datetime.to_datetime(s)
+            except Exception:
+                return False
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=self._utel_tz())
+        return dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
-            if not out:
-                for raw in (self.src, self.dst):
-                    d = _digits_only(raw)
-                    if d and not self._is_internal_number(d):
-                        out.append(_uz_digits(d))
-            return list(dict.fromkeys(out))
+    # ---------- fingerprint ----------
+    @api.model
+    def _build_fp_key_from_vals(self, vals):
+        dt = vals.get("date_time")
+        t = (vals.get("type") or "").strip()
+        srcn = _digits_only(vals.get("src"))
+        dstn = _digits_only(vals.get("dst"))
+        extn = _digits_only(vals.get("external_number"))
+        dt_s = dt.strftime("%Y-%m-%d %H:%M:%S") if isinstance(dt, datetime) and dt else str(dt or "")
+        return f"{t}|{dt_s}|{srcn}|{dstn}|{extn}"
 
-        _NUM_TO_PARTNER_CACHE = {} 
+    def _recompute_fp_key(self):
+        for r in self:
+            dt_s = r.date_time.strftime("%Y-%m-%d %H:%M:%S") if r.date_time else ""
+            r.fp_key = f"{r.type or ''}|{dt_s}|{r.src_norm or ''}|{r.dst_norm or ''}|{r.external_number_norm or ''}"
 
+    # ---------- partner matching / auto-create ----------
+    @api.model
+    def _internal_extensions(self):
+        ICP = self.env["ir.config_parameter"].sudo()
+        raw = ICP.get_param(PARAM_INTERNAL_EXT, default="") or ""
+        return {x.strip() for x in raw.split(",") if x.strip()}
+
+    @api.model
+    def _is_internal_number(self, raw_num) -> bool:
+        if not raw_num:
+            return True
+        d = _digits_only(raw_num)
+        if not d:
+            return True
+        if d in self._internal_extensions():
+            return True
+        if len(d) <= 5:
+            return True
+        return False
+
+    @api.model
+    def _company_dids(self):
+        ICP = self.env["ir.config_parameter"].sudo()
+        raw = (ICP.get_param(PARAM_DIDS) or "").strip()
+        dids = set()
+        for token in raw.split(","):
+            d = _digits_only(token)
+            if d:
+                dids.add(d)
+        return dids
+
+    def _external_candidates(self):
+        self.ensure_one()
+        dids = self._company_dids()
+        payload_did = _digits_only(self.external_number)
+        if payload_did:
+            dids.add(payload_did)
+
+        out, seen = [], set()
+
+        def consider(raw):
+            d = _digits_only(raw)
+            if not d or d in seen:
+                return
+            seen.add(d)
+            if d in dids:
+                return
+            if self._is_internal_number(d):
+                return
+            out.append(_uz_digits(d))
+
+        if (self.type or "").lower() == "in":
+            for raw in (self.src, self.dst):
+                consider(raw)
+        elif (self.type or "").lower() == "out":
+            for raw in (self.dst, self.src):
+                consider(raw)
+        else:
+            for raw in (self.src, self.dst):
+                consider(raw)
+
+        if not out:
+            for raw in (self.src, self.dst):
+                d = _digits_only(raw)
+                if d and not self._is_internal_number(d):
+                    out.append(_uz_digits(d))
+        return list(dict.fromkeys(out))
 
     def _find_partner_by_numbers(self):
         """
@@ -437,7 +437,7 @@ class UtelCall(models.Model):
         """
         self.ensure_one()
         Partners = self.env["res.partner"].sudo()
-        cache = globals().setdefault("_NUM_TO_PARTNER_CACHE", {})
+        cache = type(self)._NUM_TO_PARTNER_CACHE
 
         candidates = self._external_candidates()
         if not candidates:
@@ -455,14 +455,14 @@ class UtelCall(models.Model):
             return self.env["res.partner"]
 
         for d_clean in norms:
-            # 0) in-process cache (fast, avoids dupe during one sync)
+            # 0) in-process cache
             pid = cache.get(d_clean)
             if pid:
                 p = Partners.browse(pid)
                 if p.exists():
                     return p
 
-            # 1) exact match on COMPACT format (what we create)
+            # 1) exact match on COMPACT format
             compact = f"+{d_clean}"
             exact_eq = Partners.search(
                 ['|', ('phone', '=', compact), ('mobile', '=', compact)],
@@ -472,28 +472,25 @@ class UtelCall(models.Model):
                 cache[d_clean] = exact_eq.id
                 return exact_eq
 
-            # 2) fallback: tail ilike (works best when phones are stored compact)
+            # 2) fallback: tail ilike, then verify
             tail = d_clean[-7:] if len(d_clean) > 7 else d_clean
             possible = Partners.search(
                 ['|', ('phone', 'ilike', tail), ('mobile', 'ilike', tail)],
                 limit=100,
             )
 
-            # verify strictly by digits to avoid false positives
             exact = []
             for p in possible:
                 if _digits_only(p.phone) == d_clean or _digits_only(p.mobile) == d_clean:
                     exact.append(p)
 
             if exact:
-                # Prefer same-company if possible
                 same_co = [p for p in exact if (not p.company_id or p.company_id == self.env.company)]
                 keeper = (same_co or exact)[0]
                 cache[d_clean] = keeper.id
                 return keeper
 
         return self.env["res.partner"]
-
 
     def _get_or_create_partner_by_number(self, raw_digits: str):
         """
@@ -503,7 +500,7 @@ class UtelCall(models.Model):
         - if none found, create once; re-check and cache.
         """
         Partners = self.env["res.partner"].sudo()
-        cache = globals().setdefault("_NUM_TO_PARTNER_CACHE", {})
+        cache = type(self)._NUM_TO_PARTNER_CACHE
 
         d_clean = _digits_only(_uz_digits(raw_digits))
         if not d_clean:
@@ -538,10 +535,10 @@ class UtelCall(models.Model):
                 cache[d_clean] = p.id
                 return p
 
-        # 3) create once in COMPACT format (no spaces → future tail matches)
+        # 3) create once in COMPACT format
         partner = Partners.create({
             "name": compact,
-            "phone": compact,          # keep consistent & searchable
+            "phone": compact,
             "company_type": "person",
             # Optional company scoping:
             # "company_id": self.env.company.id,
@@ -555,7 +552,7 @@ class UtelCall(models.Model):
         final = again or partner
         cache[d_clean] = final.id
         return final
-    
+
     def _assign_partner_from_numbers(self, create_if_missing=True):
         """
         Set partner_id for each record if possible.
@@ -582,7 +579,6 @@ class UtelCall(models.Model):
             partner = rec._get_or_create_partner_by_number(cands[0])
             if partner:
                 rec.partner_id = partner.id
-
 
     # ---------- upsert ----------
     def _upsert_from_vals(self, vals, company=None):
@@ -726,6 +722,8 @@ class UtelCall(models.Model):
         return base, token, per_page
 
     def _fetch_page(self, base, token, page=1, per_page=50, date_from=None, date_to=None):
+        url = f"{base}/api/v1/call-history"
+        # NOTE: if upstream path is actually '/api/v1/call-history' without '}', fix here:
         url = f"{base}/api/v1/call-history"
         params = {
             "per_page": per_page, "page": page, "sort": "-date_time",
